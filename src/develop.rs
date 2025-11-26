@@ -433,7 +433,7 @@ pub fn develop(develop_options: DevelopOptions, venv_dir: &Path) -> Result<()> {
         compression,
     };
 
-    let build_context = build_options
+    let mut build_context = build_options
         .into_build_context()
         .strip(strip)
         .editable(true)

@@ -68,7 +68,7 @@ pub fn test_musl() -> Result<bool> {
         "test-crates/wheels/test_musl",
     ])?;
 
-    let build_context = options
+    let mut build_context = options
         .into_build_context()
         .strip(cfg!(feature = "faster-tests"))
         .editable(false)
@@ -254,7 +254,7 @@ fn build_wheel_files(package: impl AsRef<Path>, unique_name: &str) -> Result<Zip
         ..Default::default()
     };
 
-    let build_context = build_options
+    let mut build_context = build_options
         .into_build_context()
         .strip(false)
         .editable(false)

@@ -9,8 +9,10 @@ use maturin::pyproject_toml::SdistGenerator;
 use rstest::rstest;
 use serial_test::serial;
 use std::env;
+use std::fs;
 use std::path::Path;
 use std::time::Duration;
+use tempfile;
 use time::macros::datetime;
 use which::which;
 
@@ -270,6 +272,38 @@ fn integration_pyo3_bin() {
         false,
         None,
     ));
+    let wheel = fs::read_dir("test-crates/pyo3-pure/target/wheels")
+        .unwrap()
+        .find(|entry| {
+            entry
+                .as_ref()
+                .unwrap()
+                .path()
+                .extension()
+                .map_or(false, |ext| ext == "whl")
+        })
+        .unwrap()
+        .unwrap();
+    let test_dir = tempfile::tempdir().unwrap();
+    let test_dir_path = test_dir.path();
+    let mut archive = zip::ZipArchive::new(fs::File::open(wheel.path()).unwrap()).unwrap();
+    archive.extract(test_dir_path).unwrap();
+    let pyi = fs::read_to_string(test_dir_path.join("pyo3_pure.pyi")).unwrap();
+    let expected = expect![[r#"
+        from typing import overload
+
+        class DummyClass:
+            def __init__(self) -> None: ...
+            def get_42(self) -> int: ...
+
+        def get_false() -> bool: ...
+        def get_true() -> bool: ...
+        @overload
+        def sum_as_string(a: int, b: int, /) -> str: ...
+        @overload
+        def sum_as_string(*, a: int, b: int) -> str: ...
+    "#]];
+    expected.assert_eq(&pyi);
 }
 
 #[test]

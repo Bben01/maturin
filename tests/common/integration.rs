@@ -136,7 +136,7 @@ pub fn test_integration(
     }
 
     let options: BuildOptions = BuildOptions::try_parse_from(cli)?;
-    let build_context = options
+    let mut build_context = options
         .into_build_context()
         .strip(cfg!(feature = "faster-tests"))
         .editable(false)
@@ -263,7 +263,7 @@ pub fn test_integration_conda(package: impl AsRef<Path>, bindings: Option<String
 
     let options = BuildOptions::try_parse_from(cli)?;
 
-    let build_context = options
+    let mut build_context = options
         .into_build_context()
         .strip(cfg!(feature = "faster-tests"))
         .editable(false)

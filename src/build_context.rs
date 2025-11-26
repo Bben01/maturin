@@ -16,6 +16,7 @@ use crate::{
     BridgeModel, BuildArtifact, Metadata24, PyProjectToml, PythonInterpreter, Target, compile,
     pyproject_toml::Format,
 };
+use crate::module_writer::ModuleWriter;
 use anyhow::{Context, Result, anyhow, bail};
 use cargo_metadata::CrateType;
 use cargo_metadata::Metadata;
@@ -116,6 +117,10 @@ pub struct BuildContext {
     pub out: PathBuf,
     /// Strip the library for minimum file size
     pub strip: bool,
+    /// Generate pyi stubs for pyo3 bindings
+    pub generate_stubs: bool,
+    /// Generated pyi stubs
+    pub stubs: Option<BTreeMap<PathBuf, Vec<u8>>>,
     /// Checking the linked libraries for manylinux/musllinux compliance
     pub auditwheel: AuditWheelMode,
     /// When compiling for manylinux, use zig as linker to ensure glibc version compliance
@@ -149,7 +154,7 @@ impl BuildContext {
     /// Checks which kind of bindings we have (pyo3/rust-cypthon or cffi or bin) and calls the
     /// correct builder.
     #[instrument(skip_all)]
-    pub fn build_wheels(&self) -> Result<Vec<BuiltWheelMetadata>> {
+    pub fn build_wheels(&mut self) -> Result<Vec<BuiltWheelMetadata>> {
         use itertools::Itertools;
 
         fs::create_dir_all(&self.out)
@@ -157,7 +162,10 @@ impl BuildContext {
 
         let wheels = match self.bridge() {
             BridgeModel::Bin(None) => self.build_bin_wheel(None)?,
-            BridgeModel::Bin(Some(..)) => self.build_bin_wheels(&self.interpreter)?,
+            BridgeModel::Bin(Some(..)) => {
+                let interpreters: Vec<_> = self.interpreter.clone();
+                self.build_bin_wheels(&interpreters)?
+            }
             BridgeModel::PyO3(crate::PyO3 { abi3, .. }) => match abi3 {
                 Some(Abi3Version::Version(major, minor)) => {
                     let abi3_interps: Vec<_> = self
@@ -228,7 +236,10 @@ impl BuildContext {
                     }
                     built_wheels
                 }
-                None => self.build_pyo3_wheels(&self.interpreter)?,
+                None => {
+                    let interpreters: Vec<_> = self.interpreter.clone();
+                    self.build_pyo3_wheels(&interpreters)?
+                }
             },
             BridgeModel::Cffi => self.build_cffi_wheel()?,
             BridgeModel::UniFfi => self.build_uniffi_wheel()?,
@@ -793,7 +804,7 @@ impl BuildContext {
     /// For abi3 we only need to build a single wheel and we don't even need a python interpreter
     /// for it
     pub fn build_pyo3_wheel_abi3(
-        &self,
+        &mut self,
         interpreters: &[PythonInterpreter],
         major: u8,
         min_minor: u8,
@@ -802,10 +813,8 @@ impl BuildContext {
         // On windows, we have picked an interpreter to set the location of python.lib,
         // otherwise it's none
         let python_interpreter = interpreters.first();
-        let artifact = self.compile_cdylib(
-            python_interpreter,
-            Some(&self.project_layout.extension_name),
-        )?;
+        let extension_name = self.project_layout.extension_name.clone();
+        let artifact = self.compile_cdylib(python_interpreter, Some(&extension_name))?;
         let (policy, external_libs) =
             self.auditwheel(&artifact, &self.platform_tag, python_interpreter)?;
         let platform_tags = if self.platform_tag.is_empty() {
@@ -884,15 +893,14 @@ impl BuildContext {
     ///
     /// Runs [auditwheel_rs()] if not deactivated
     pub fn build_pyo3_wheels(
-        &self,
+        &mut self,
         interpreters: &[PythonInterpreter],
     ) -> Result<Vec<BuiltWheelMetadata>> {
         let mut wheels = Vec::new();
         for python_interpreter in interpreters {
-            let artifact = self.compile_cdylib(
-                Some(python_interpreter),
-                Some(&self.project_layout.extension_name),
-            )?;
+            let extension_name = self.project_layout.extension_name.clone();
+            let artifact =
+                self.compile_cdylib(Some(python_interpreter), Some(&extension_name))?;
             let (policy, external_libs) =
                 self.auditwheel(&artifact, &self.platform_tag, Some(python_interpreter))?;
             let platform_tags = if self.platform_tag.is_empty() {
@@ -922,12 +930,13 @@ impl BuildContext {
     /// The module name is used to warn about missing a `PyInit_<module name>` function for
     /// bindings modules.
     pub fn compile_cdylib(
-        &self,
+        &mut self,
         python_interpreter: Option<&PythonInterpreter>,
         extension_name: Option<&str>,
     ) -> Result<BuildArtifact> {
-        let artifacts = compile(self, python_interpreter, &self.compile_targets)
+        let (artifacts, stubs) = compile(self, python_interpreter, &self.compile_targets)
             .context("Failed to build a native library through cargo")?;
+        self.stubs = stubs;
         let error_msg = "Cargo didn't build a cdylib. Did you miss crate-type = [\"cdylib\"] \
                  in the lib section of your Cargo.toml?";
         let artifacts = artifacts.first().context(error_msg)?;
@@ -991,6 +1000,11 @@ impl BuildContext {
             self.editable,
             self.pyproject_toml.as_ref(),
         )?;
+        if let Some(stubs) = &self.stubs {
+            for (path, content) in stubs {
+                writer.add_bytes(path, None, content.as_slice(), false)?;
+            }
+        }
 
         self.add_pth(&mut writer)?;
         add_data(
@@ -1003,7 +1017,7 @@ impl BuildContext {
     }
 
     /// Builds a wheel with cffi bindings
-    pub fn build_cffi_wheel(&self) -> Result<Vec<BuiltWheelMetadata>> {
+    pub fn build_cffi_wheel(&mut self) -> Result<Vec<BuiltWheelMetadata>> {
         let mut wheels = Vec::new();
         let artifact = self.compile_cdylib(None, None)?;
         let (policy, external_libs) = self.auditwheel(&artifact, &self.platform_tag, None)?;
@@ -1067,6 +1081,11 @@ impl BuildContext {
             self.editable,
             self.pyproject_toml.as_ref(),
         )?;
+        if let Some(stubs) = &self.stubs {
+            for (path, content) in stubs {
+                writer.add_bytes(path, None, content.as_slice(), false)?;
+            }
+        }
 
         self.add_pth(&mut writer)?;
         add_data(
@@ -1079,7 +1098,7 @@ impl BuildContext {
     }
 
     /// Builds a wheel with uniffi bindings
-    pub fn build_uniffi_wheel(&self) -> Result<Vec<BuiltWheelMetadata>> {
+    pub fn build_uniffi_wheel(&mut self) -> Result<Vec<BuiltWheelMetadata>> {
         let mut wheels = Vec::new();
         let artifact = self.compile_cdylib(None, None)?;
         let (policy, external_libs) = self.auditwheel(&artifact, &self.platform_tag, None)?;
@@ -1182,6 +1201,11 @@ impl BuildContext {
             }
         }
         self.add_external_libs(&mut writer, &artifacts_ref, ext_libs)?;
+        if let Some(stubs) = &self.stubs {
+            for (path, content) in stubs {
+                writer.add_bytes(path, None, content.as_slice(), false)?;
+            }
+        }
 
         self.add_pth(&mut writer)?;
         add_data(
@@ -1201,7 +1225,7 @@ impl BuildContext {
         python_interpreter: Option<&PythonInterpreter>,
     ) -> Result<Vec<BuiltWheelMetadata>> {
         let mut wheels = Vec::new();
-        let artifacts = compile(self, python_interpreter, &self.compile_targets)
+        let (artifacts, _stubs) = compile(self, python_interpreter, &self.compile_targets)
             .context("Failed to build a native library through cargo")?;
         if artifacts.is_empty() {
             bail!("Cargo didn't build a binary")

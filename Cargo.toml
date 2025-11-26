@@ -73,6 +73,7 @@ rustc_version = "0.4.0"
 semver = "1.0.22"
 target-lexicon = "0.13.3"
 indexmap = "2.2.3"
+pyo3-introspection = "0.27.1"
 pyproject-toml = { version = "0.13.5", features = ["pep639-glob"] }
 python-pkginfo = "0.6.6"
 textwrap = "0.16.1"

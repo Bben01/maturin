@@ -718,6 +718,7 @@ impl BuildContextBuilder {
         }
 
         let strip = pyproject.map(|x| x.strip()).unwrap_or_default() || strip;
+        let generate_stubs = pyproject.map(|x| x.generate_stubs()).unwrap_or_default();
         let skip_auditwheel = pyproject.map(|x| x.skip_auditwheel()).unwrap_or_default()
             || build_options.skip_auditwheel;
         let auditwheel = build_options
@@ -832,6 +833,8 @@ impl BuildContextBuilder {
             target_dir,
             out: wheel_dir,
             strip,
+            generate_stubs,
+            stubs: None,
             auditwheel,
             #[cfg(feature = "zig")]
             zig: build_options.zig,
