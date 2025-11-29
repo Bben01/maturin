@@ -934,9 +934,9 @@ impl BuildContext {
         python_interpreter: Option<&PythonInterpreter>,
         extension_name: Option<&str>,
     ) -> Result<BuildArtifact> {
-        let (artifacts, stubs) = compile(self, python_interpreter, &self.compile_targets)
+        let artifacts = compile(self, python_interpreter, &self.compile_targets)
             .context("Failed to build a native library through cargo")?;
-        self.stubs = stubs;
+
         let error_msg = "Cargo didn't build a cdylib. Did you miss crate-type = [\"cdylib\"] \
                  in the lib section of your Cargo.toml?";
         let artifacts = artifacts.first().context(error_msg)?;
@@ -950,6 +950,40 @@ impl BuildContext {
             // globin has an issue parsing MIPS64 ELF, see https://github.com/m4b/goblin/issues/274
             // But don't fail the build just because we can't emit a warning
             let _ = warn_missing_py_init(&artifact.path, extension_name);
+        }
+
+        if self.generate_stubs {
+            let bridge_model = &self.compile_targets[0].bridge_model;
+            if bridge_model.is_pyo3() && !bridge_model.is_bin() {
+                let temp_dir = tempfile::tempdir()?;
+                let python_path = temp_dir.path();
+                let target_path = if bridge_model.is_abi3() {
+                    self.project_layout
+                        .get_abi3_library_path(&self.target.target_os())
+                } else {
+                    self.project_layout
+                        .get_library_path(python_interpreter.unwrap())
+                };
+                let target_path = python_path.join(target_path);
+                fs::create_dir_all(target_path.parent().unwrap())?;
+                fs::copy(&artifact.path, target_path)?;
+                let stubs = match pyo3_introspection::introspect_cdylib(
+                    &artifact.path,
+                    &self.module_name,
+                ) {
+                    Ok(module) => Some(
+                        pyo3_introspection::module_stub_files(&module)
+                            .into_iter()
+                            .map(|(path, content)| (path, content.into_bytes()))
+                            .collect(),
+                    ),
+                    Err(e) => {
+                        eprintln!("⚠️  Warning: Failed to generate stubs: {}", e);
+                        None
+                    }
+                };
+                self.stubs = stubs;
+            }
         }
 
         if self.editable || matches!(self.auditwheel, AuditWheelMode::Skip) {
@@ -1225,7 +1259,7 @@ impl BuildContext {
         python_interpreter: Option<&PythonInterpreter>,
     ) -> Result<Vec<BuiltWheelMetadata>> {
         let mut wheels = Vec::new();
-        let (artifacts, _stubs) = compile(self, python_interpreter, &self.compile_targets)
+        let artifacts = compile(self, python_interpreter, &self.compile_targets)
             .context("Failed to build a native library through cargo")?;
         if artifacts.is_empty() {
             bail!("Cargo didn't build a binary")

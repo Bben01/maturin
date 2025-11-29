@@ -10,7 +10,7 @@ use rstest::rstest;
 use serial_test::serial;
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tempfile;
 use time::macros::datetime;
@@ -265,14 +265,19 @@ fn integration_pyo3_bin() {
         return;
     }
 
+    let manifest_path = PathBuf::from("test-crates/pyo3-pure");
     handle_result(integration::test_integration(
-        "test-crates/pyo3-bin",
+        &manifest_path,
         None,
         "integration-pyo3-bin",
         false,
         None,
     ));
-    let wheel = fs::read_dir("test-crates/pyo3-pure/target/wheels")
+    let pyi_path = manifest_path.join("pyo3_pure.pyi");
+    if pyi_path.exists() {
+        fs::remove_file(&pyi_path).unwrap();
+    }
+    let wheel = fs::read_dir(manifest_path.join("target/wheels"))
         .unwrap()
         .find(|entry| {
             entry

@@ -47,17 +47,13 @@ pub struct BuildArtifact {
 }
 
 /// Builds the rust crate into a native module (i.e. an .so or .dll) for a
-use std::collections::BTreeMap;
 /// specific python version. Returns a mapping from crate type (e.g. cdylib)
 /// to artifact location.
 pub fn compile(
     context: &BuildContext,
     python_interpreter: Option<&PythonInterpreter>,
     targets: &[CompileTarget],
-) -> Result<(
-    Vec<HashMap<CrateType, BuildArtifact>>,
-    Option<BTreeMap<PathBuf, Vec<u8>>>,
-)> {
+) -> Result<Vec<HashMap<CrateType, BuildArtifact>>> {
     if context.universal2 {
         compile_universal2(context, python_interpreter, targets)
     } else {
@@ -70,22 +66,17 @@ fn compile_universal2(
     context: &BuildContext,
     python_interpreter: Option<&PythonInterpreter>,
     targets: &[CompileTarget],
-) -> Result<(
-    Vec<HashMap<CrateType, BuildArtifact>>,
-    Option<BTreeMap<PathBuf, Vec<u8>>>,
-)> {
+) -> Result<Vec<HashMap<CrateType, BuildArtifact>>> {
     let mut aarch64_context = context.clone();
     aarch64_context.target = Target::from_resolved_target_triple("aarch64-apple-darwin")?;
 
-    let (aarch64_artifacts, aarch64_stubs) =
-        compile_targets(&aarch64_context, python_interpreter, targets)
-            .context("Failed to build a aarch64 library through cargo")?;
+    let aarch64_artifacts = compile_targets(&aarch64_context, python_interpreter, targets)
+        .context("Failed to build a aarch64 library through cargo")?;
     let mut x86_64_context = context.clone();
     x86_64_context.target = Target::from_resolved_target_triple("x86_64-apple-darwin")?;
 
-    let (x86_64_artifacts, _x86_64_stubs) =
-        compile_targets(&x86_64_context, python_interpreter, targets)
-            .context("Failed to build a x86_64 library through cargo")?;
+    let x86_64_artifacts = compile_targets(&x86_64_context, python_interpreter, targets)
+        .context("Failed to build a x86_64 library through cargo")?;
 
     let mut universal_artifacts = Vec::with_capacity(targets.len());
     for (bridge_model, (aarch64_artifact, x86_64_artifact)) in targets
@@ -145,28 +136,21 @@ fn compile_universal2(
         result.insert(build_type, universal_artifact);
         universal_artifacts.push(result);
     }
-    Ok((universal_artifacts, aarch64_stubs))
+    Ok(universal_artifacts)
 }
 
 fn compile_targets(
     context: &BuildContext,
     python_interpreter: Option<&PythonInterpreter>,
     targets: &[CompileTarget],
-) -> Result<(
-    Vec<HashMap<CrateType, BuildArtifact>>,
-    Option<BTreeMap<PathBuf, Vec<u8>>>,
-)> {
+) -> Result<Vec<HashMap<CrateType, BuildArtifact>>> {
     let mut artifacts = Vec::with_capacity(targets.len());
-    let mut stubs = None;
     for target in targets {
         let build_command = cargo_build_command(context, python_interpreter, target)?;
-        let (artifact, target_stubs) = compile_target(context, build_command)?;
+        let artifact = compile_target(context, build_command)?;
         artifacts.push(artifact);
-        if target_stubs.is_some() {
-            stubs = target_stubs;
-        }
     }
-    Ok((artifacts, stubs))
+    Ok(artifacts)
 }
 
 fn cargo_build_command(
@@ -507,10 +491,9 @@ fn cargo_build_command(
 fn compile_target(
     context: &BuildContext,
     mut build_command: Command,
-) -> Result<(
+) -> Result<
     HashMap<CrateType, BuildArtifact>,
-    Option<BTreeMap<PathBuf, Vec<u8>>>,
-)> {
+> {
     debug!("Running {:?}", build_command);
 
     let using_cross = build_command
@@ -617,34 +600,7 @@ fn compile_target(
         )
     }
 
-    let stubs = if context.generate_stubs {
-        let bridge_model = &context.compile_targets[0].bridge_model;
-        if bridge_model.is_pyo3() && !bridge_model.is_bin() {
-            let artifact = artifacts
-                .get(&CrateType::CDyLib)
-                .expect("stubgen build should have a cdylib artifact");
-            let stubs =
-                match pyo3_introspection::introspect_cdylib(&artifact.path, &context.module_name) {
-                    Ok(module) => Some(
-                        pyo3_introspection::module_stub_files(&module)
-                            .into_iter()
-                            .map(|(path, content)| (path, content.into_bytes()))
-                            .collect(),
-                    ),
-                    Err(e) => {
-                        eprintln!("⚠️  Warning: Failed to generate stubs: {}", e);
-                        None
-                    }
-                };
-            stubs
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    Ok((artifacts, stubs))
+    Ok(artifacts)
 }
 
 /// Checks that the native library contains a function called `PyInit_<module name>` and warns
