@@ -469,23 +469,3 @@ impl ProjectLayout {
         }
     }
 }
-
-impl ProjectLayout {
-    /// Returns the location of the shared library for the given python interpreter
-    pub fn get_library_path(&self, interpreter: &crate::PythonInterpreter) -> PathBuf {
-        let mut path = self.rust_module.clone();
-        path.push(interpreter.get_library_name(&self.extension_name));
-        path
-    }
-
-    /// Returns the location of the shared library for abi3
-    pub fn get_abi3_library_path(&self, os: &crate::target::Os) -> PathBuf {
-        let mut path = self.rust_module.clone();
-        let extension = match os {
-            crate::target::Os::Windows => "pyd",
-            _ => "so",
-        };
-        path.push(format!("{}.abi3.{}", self.extension_name, extension));
-        path
-    }
-}

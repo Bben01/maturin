@@ -9,10 +9,8 @@ use maturin::pyproject_toml::SdistGenerator;
 use rstest::rstest;
 use serial_test::serial;
 use std::env;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
-use tempfile;
 use time::macros::datetime;
 use which::which;
 
@@ -265,50 +263,13 @@ fn integration_pyo3_bin() {
         return;
     }
 
-    let manifest_path = PathBuf::from("test-crates/pyo3-pure");
     handle_result(integration::test_integration(
-        &manifest_path,
+        "test-crates/pyo3-bin",
         None,
         "integration-pyo3-bin",
         false,
         None,
     ));
-    let pyi_path = manifest_path.join("pyo3_pure.pyi");
-    if pyi_path.exists() {
-        fs::remove_file(&pyi_path).unwrap();
-    }
-    let wheel = fs::read_dir(manifest_path.join("target/wheels"))
-        .unwrap()
-        .find(|entry| {
-            entry
-                .as_ref()
-                .unwrap()
-                .path()
-                .extension()
-                .map_or(false, |ext| ext == "whl")
-        })
-        .unwrap()
-        .unwrap();
-    let test_dir = tempfile::tempdir().unwrap();
-    let test_dir_path = test_dir.path();
-    let mut archive = zip::ZipArchive::new(fs::File::open(wheel.path()).unwrap()).unwrap();
-    archive.extract(test_dir_path).unwrap();
-    let pyi = fs::read_to_string(test_dir_path.join("pyo3_pure.pyi")).unwrap();
-    let expected = expect![[r#"
-        from typing import overload
-
-        class DummyClass:
-            def __init__(self) -> None: ...
-            def get_42(self) -> int: ...
-
-        def get_false() -> bool: ...
-        def get_true() -> bool: ...
-        @overload
-        def sum_as_string(a: int, b: int, /) -> str: ...
-        @overload
-        def sum_as_string(*, a: int, b: int) -> str: ...
-    "#]];
-    expected.assert_eq(&pyi);
 }
 
 #[test]
@@ -888,6 +849,26 @@ fn pyo3_mixed_include_exclude_wheel_files() {
             "README.md",
         ],
         "wheel-files-pyo3-mixed-include-exclude",
+        &[],
+    ))
+}
+
+#[test]
+fn pyo3_pure_pyi() {
+    handle_result(other::check_wheel_files(
+        "test-crates/pyo3-pure",
+        vec![
+            "pyo3_pure-0.1.0+abc123de.dist-info/METADATA",
+            "pyo3_pure-0.1.0+abc123de.dist-info/RECORD",
+            "pyo3_pure-0.1.0+abc123de.dist-info/WHEEL",
+            "pyo3_pure-0.1.0+abc123de.dist-info/entry_points.txt",
+            "pyo3_pure-0.1.0+abc123de.dist-info/licenses/LICENSE",
+            "pyo3_pure/__init__.py",
+            "pyo3_pure/__init__.pyi",
+            "pyo3_pure/py.typed",
+        ],
+        "wheel-files-pyo3-pure-pyi",
+        &["--generate-stubs"],
     ))
 }
 

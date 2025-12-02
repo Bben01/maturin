@@ -7,7 +7,7 @@ use crate::bridge::Abi3Version;
 use crate::build_options::CargoOptions;
 use crate::compile::{CompileTarget, warn_missing_py_init};
 use crate::compression::CompressionOptions;
-use crate::module_writer::{ModuleWriterExt, WheelWriter, add_data, write_python_part};
+use crate::module_writer::{add_data, write_python_part, ModuleWriterExt, WheelWriter};
 use crate::project_layout::ProjectLayout;
 use crate::source_distribution::source_distribution;
 use crate::target::validate_wheel_filename_for_pypi;
@@ -16,11 +16,12 @@ use crate::{
     BridgeModel, BuildArtifact, Metadata24, PyProjectToml, PythonInterpreter, Target, compile,
     pyproject_toml::Format,
 };
-use crate::module_writer::ModuleWriter;
 use anyhow::{Context, Result, anyhow, bail};
 use cargo_metadata::CrateType;
 use cargo_metadata::Metadata;
 use fs_err as fs;
+#[cfg(feature = "pyo3-introspection")]
+use pyo3_introspection;
 use ignore::overrides::{Override, OverrideBuilder};
 use indexmap::IndexMap;
 use lddtree::Library;
@@ -154,7 +155,7 @@ impl BuildContext {
     /// Checks which kind of bindings we have (pyo3/rust-cypthon or cffi or bin) and calls the
     /// correct builder.
     #[instrument(skip_all)]
-    pub fn build_wheels(&mut self) -> Result<Vec<BuiltWheelMetadata>> {
+    pub fn build_wheels(&self) -> Result<Vec<BuiltWheelMetadata>> {
         use itertools::Itertools;
 
         fs::create_dir_all(&self.out)
@@ -162,10 +163,7 @@ impl BuildContext {
 
         let wheels = match self.bridge() {
             BridgeModel::Bin(None) => self.build_bin_wheel(None)?,
-            BridgeModel::Bin(Some(..)) => {
-                let interpreters: Vec<_> = self.interpreter.clone();
-                self.build_bin_wheels(&interpreters)?
-            }
+            BridgeModel::Bin(Some(..)) => self.build_bin_wheels(&self.interpreter)?,
             BridgeModel::PyO3(crate::PyO3 { abi3, .. }) => match abi3 {
                 Some(Abi3Version::Version(major, minor)) => {
                     let abi3_interps: Vec<_> = self
@@ -236,10 +234,7 @@ impl BuildContext {
                     }
                     built_wheels
                 }
-                None => {
-                    let interpreters: Vec<_> = self.interpreter.clone();
-                    self.build_pyo3_wheels(&interpreters)?
-                }
+                None => self.build_pyo3_wheels(&self.interpreter)?,
             },
             BridgeModel::Cffi => self.build_cffi_wheel()?,
             BridgeModel::UniFfi => self.build_uniffi_wheel()?,
@@ -760,6 +755,7 @@ impl BuildContext {
         ext_libs: Vec<Library>,
         major: u8,
         min_minor: u8,
+        stubs: Option<BTreeMap<PathBuf, Vec<u8>>>,
     ) -> Result<BuiltWheelMetadata> {
         let platform = self.get_platform_tag(platform_tags)?;
         let tag = format!("cp{major}{min_minor}-abi3-{platform}");
@@ -791,6 +787,13 @@ impl BuildContext {
         )
         .context("Failed to add the files to the wheel")?;
 
+        if let Some(stubs) = stubs {
+            for (path, data) in stubs {
+                let path_in_wheel = self.module_name.split('.').collect::<PathBuf>().join(path);
+                writer.add_bytes_from_slice(path_in_wheel, &data, false)?;
+            }
+        }
+
         self.add_pth(&mut writer)?;
         add_data(
             &mut writer,
@@ -804,7 +807,7 @@ impl BuildContext {
     /// For abi3 we only need to build a single wheel and we don't even need a python interpreter
     /// for it
     pub fn build_pyo3_wheel_abi3(
-        &mut self,
+        &self,
         interpreters: &[PythonInterpreter],
         major: u8,
         min_minor: u8,
@@ -813,8 +816,10 @@ impl BuildContext {
         // On windows, we have picked an interpreter to set the location of python.lib,
         // otherwise it's none
         let python_interpreter = interpreters.first();
-        let extension_name = self.project_layout.extension_name.clone();
-        let artifact = self.compile_cdylib(python_interpreter, Some(&extension_name))?;
+        let (artifact, stubs) = self.compile_cdylib(
+            python_interpreter,
+            Some(&self.project_layout.extension_name),
+        )?;
         let (policy, external_libs) =
             self.auditwheel(&artifact, &self.platform_tag, python_interpreter)?;
         let platform_tags = if self.platform_tag.is_empty() {
@@ -822,8 +827,14 @@ impl BuildContext {
         } else {
             self.platform_tag.clone()
         };
-        let (wheel_path, tag) =
-            self.write_pyo3_wheel_abi3(artifact, &platform_tags, external_libs, major, min_minor)?;
+        let (wheel_path, tag) = self.write_pyo3_wheel_abi3(
+            artifact,
+            &platform_tags,
+            external_libs,
+            major,
+            min_minor,
+            stubs,
+        )?;
 
         eprintln!(
             "📦 Built wheel for abi3 Python ≥ {}.{} to {}",
@@ -842,6 +853,7 @@ impl BuildContext {
         artifact: BuildArtifact,
         platform_tags: &[PlatformTag],
         ext_libs: Vec<Library>,
+        stubs: Option<BTreeMap<PathBuf, Vec<u8>>>,
     ) -> Result<BuiltWheelMetadata> {
         let tag = python_interpreter.get_tag(self, platform_tags)?;
 
@@ -872,6 +884,13 @@ impl BuildContext {
         )
         .context("Failed to add the files to the wheel")?;
 
+        if let Some(stubs) = stubs {
+            for (path, data) in stubs {
+                let path_in_wheel = self.module_name.split('.').collect::<PathBuf>().join(path);
+                writer.add_bytes_from_slice(path_in_wheel, &data, false)?;
+            }
+        }
+
         self.add_pth(&mut writer)?;
         add_data(
             &mut writer,
@@ -893,14 +912,15 @@ impl BuildContext {
     ///
     /// Runs [auditwheel_rs()] if not deactivated
     pub fn build_pyo3_wheels(
-        &mut self,
+        &self,
         interpreters: &[PythonInterpreter],
     ) -> Result<Vec<BuiltWheelMetadata>> {
         let mut wheels = Vec::new();
         for python_interpreter in interpreters {
-            let extension_name = self.project_layout.extension_name.clone();
-            let artifact =
-                self.compile_cdylib(Some(python_interpreter), Some(&extension_name))?;
+            let (artifact, stubs) = self.compile_cdylib(
+                Some(python_interpreter),
+                Some(&self.project_layout.extension_name),
+            )?;
             let (policy, external_libs) =
                 self.auditwheel(&artifact, &self.platform_tag, Some(python_interpreter))?;
             let platform_tags = if self.platform_tag.is_empty() {
@@ -908,8 +928,13 @@ impl BuildContext {
             } else {
                 self.platform_tag.clone()
             };
-            let (wheel_path, tag) =
-                self.write_pyo3_wheel(python_interpreter, artifact, &platform_tags, external_libs)?;
+            let (wheel_path, tag) = self.write_pyo3_wheel(
+                python_interpreter,
+                artifact,
+                &platform_tags,
+                external_libs,
+                stubs,
+            )?;
             eprintln!(
                 "📦 Built wheel for {} {}.{}{} to {}",
                 python_interpreter.interpreter_kind,
@@ -930,13 +955,25 @@ impl BuildContext {
     /// The module name is used to warn about missing a `PyInit_<module name>` function for
     /// bindings modules.
     pub fn compile_cdylib(
-        &mut self,
+        &self,
         python_interpreter: Option<&PythonInterpreter>,
         extension_name: Option<&str>,
-    ) -> Result<BuildArtifact> {
-        let artifacts = compile(self, python_interpreter, &self.compile_targets)
-            .context("Failed to build a native library through cargo")?;
+    ) -> Result<(BuildArtifact, Option<BTreeMap<PathBuf, Vec<u8>>>)> {
+        let mut owned_context: Option<BuildContext> = None;
+        let context = if self.generate_stubs {
+            let mut new_context = self.clone();
+            new_context
+                .cargo_options
+                .features
+                .push("pyo3/experimental-inspect".to_string());
+            owned_context = Some(new_context);
+            owned_context.as_ref().unwrap()
+        } else {
+            self
+        };
 
+        let artifacts = compile(context, python_interpreter, &self.compile_targets)
+            .context("Failed to build a native library through cargo")?;
         let error_msg = "Cargo didn't build a cdylib. Did you miss crate-type = [\"cdylib\"] \
                  in the lib section of your Cargo.toml?";
         let artifacts = artifacts.first().context(error_msg)?;
@@ -946,48 +983,37 @@ impl BuildContext {
             .cloned()
             .ok_or_else(|| anyhow!(error_msg,))?;
 
+        let stubs = if self.generate_stubs {
+            #[cfg(feature = "pyo3-introspection")]
+            {
+                match pyo3_introspection::introspect_cdylib(&artifact.path) {
+                    Ok(stubs) => Some(stubs),
+                    Err(e) => {
+                        eprintln!(
+                            "⚠️  Warning: Failed to generate type stubs for {}: {}. Continuing build without stubs.",
+                            artifact.path.display(),
+                            e
+                        );
+                        None
+                    }
+                }
+            }
+            #[cfg(not(feature = "pyo3-introspection"))]
+            {
+                None
+            }
+        } else {
+            None
+        };
+
         if let Some(extension_name) = extension_name {
             // globin has an issue parsing MIPS64 ELF, see https://github.com/m4b/goblin/issues/274
             // But don't fail the build just because we can't emit a warning
             let _ = warn_missing_py_init(&artifact.path, extension_name);
         }
 
-        if self.generate_stubs {
-            let bridge_model = &self.compile_targets[0].bridge_model;
-            if bridge_model.is_pyo3() && !bridge_model.is_bin() {
-                let temp_dir = tempfile::tempdir()?;
-                let python_path = temp_dir.path();
-                let target_path = if bridge_model.is_abi3() {
-                    self.project_layout
-                        .get_abi3_library_path(&self.target.target_os())
-                } else {
-                    self.project_layout
-                        .get_library_path(python_interpreter.unwrap())
-                };
-                let target_path = python_path.join(target_path);
-                fs::create_dir_all(target_path.parent().unwrap())?;
-                fs::copy(&artifact.path, target_path)?;
-                let stubs = match pyo3_introspection::introspect_cdylib(
-                    &artifact.path,
-                    &self.module_name,
-                ) {
-                    Ok(module) => Some(
-                        pyo3_introspection::module_stub_files(&module)
-                            .into_iter()
-                            .map(|(path, content)| (path, content.into_bytes()))
-                            .collect(),
-                    ),
-                    Err(e) => {
-                        eprintln!("⚠️  Warning: Failed to generate stubs: {}", e);
-                        None
-                    }
-                };
-                self.stubs = stubs;
-            }
-        }
-
         if self.editable || matches!(self.auditwheel, AuditWheelMode::Skip) {
-            return Ok(artifact);
+            return Ok((artifact, stubs));
         }
         // auditwheel repair will edit the file, so we need to copy it to avoid errors in reruns
         let maturin_build = self.target_dir.join(env!("CARGO_PKG_NAME"));
@@ -996,7 +1022,7 @@ impl BuildContext {
         let new_artifact_path = maturin_build.join(artifact_path.file_name().unwrap());
         fs::copy(artifact_path, &new_artifact_path)?;
         artifact.path = new_artifact_path.normalize()?.into_path_buf();
-        Ok(artifact)
+        Ok((artifact, stubs))
     }
 
     fn write_cffi_wheel(
@@ -1034,11 +1060,6 @@ impl BuildContext {
             self.editable,
             self.pyproject_toml.as_ref(),
         )?;
-        if let Some(stubs) = &self.stubs {
-            for (path, content) in stubs {
-                writer.add_bytes(path, None, content.as_slice(), false)?;
-            }
-        }
 
         self.add_pth(&mut writer)?;
         add_data(
@@ -1051,9 +1072,9 @@ impl BuildContext {
     }
 
     /// Builds a wheel with cffi bindings
-    pub fn build_cffi_wheel(&mut self) -> Result<Vec<BuiltWheelMetadata>> {
+    pub fn build_cffi_wheel(&self) -> Result<Vec<BuiltWheelMetadata>> {
         let mut wheels = Vec::new();
-        let artifact = self.compile_cdylib(None, None)?;
+        let (artifact, _stubs) = self.compile_cdylib(None, None)?;
         let (policy, external_libs) = self.auditwheel(&artifact, &self.platform_tag, None)?;
         let platform_tags = if self.platform_tag.is_empty() {
             vec![policy.platform_tag()]
@@ -1115,11 +1136,6 @@ impl BuildContext {
             self.editable,
             self.pyproject_toml.as_ref(),
         )?;
-        if let Some(stubs) = &self.stubs {
-            for (path, content) in stubs {
-                writer.add_bytes(path, None, content.as_slice(), false)?;
-            }
-        }
 
         self.add_pth(&mut writer)?;
         add_data(
@@ -1132,9 +1148,9 @@ impl BuildContext {
     }
 
     /// Builds a wheel with uniffi bindings
-    pub fn build_uniffi_wheel(&mut self) -> Result<Vec<BuiltWheelMetadata>> {
+    pub fn build_uniffi_wheel(&self) -> Result<Vec<BuiltWheelMetadata>> {
         let mut wheels = Vec::new();
-        let artifact = self.compile_cdylib(None, None)?;
+        let (artifact, _stubs) = self.compile_cdylib(None, None)?;
         let (policy, external_libs) = self.auditwheel(&artifact, &self.platform_tag, None)?;
         let platform_tags = if self.platform_tag.is_empty() {
             vec![policy.platform_tag()]
@@ -1235,11 +1251,6 @@ impl BuildContext {
             }
         }
         self.add_external_libs(&mut writer, &artifacts_ref, ext_libs)?;
-        if let Some(stubs) = &self.stubs {
-            for (path, content) in stubs {
-                writer.add_bytes(path, None, content.as_slice(), false)?;
-            }
-        }
 
         self.add_pth(&mut writer)?;
         add_data(

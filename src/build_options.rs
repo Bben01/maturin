@@ -225,6 +225,10 @@ pub struct BuildOptions {
     /// Wheel compression options
     #[command(flatten)]
     pub compression: CompressionOptions,
+
+    /// Generate pyi stub files for pyo3 bindings
+    #[arg(long)]
+    pub generate_stubs: bool,
 }
 
 impl Deref for BuildOptions {
@@ -718,7 +722,6 @@ impl BuildContextBuilder {
         }
 
         let strip = pyproject.map(|x| x.strip()).unwrap_or_default() || strip;
-        let generate_stubs = pyproject.map(|x| x.generate_stubs()).unwrap_or_default();
         let skip_auditwheel = pyproject.map(|x| x.skip_auditwheel()).unwrap_or_default()
             || build_options.skip_auditwheel;
         let auditwheel = build_options
@@ -820,6 +823,10 @@ impl BuildContextBuilder {
         }
 
         let crate_name = cargo_toml.package.name;
+        let generate_stubs = pyproject
+            .map(|x| x.maturin().map(|m| m.generate_stubs).unwrap_or(false))
+            .unwrap_or(false)
+            || build_options.generate_stubs;
         Ok(BuildContext {
             target,
             compile_targets,

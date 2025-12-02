@@ -431,9 +431,10 @@ pub fn develop(develop_options: DevelopOptions, venv_dir: &Path) -> Result<()> {
             ..cargo_options
         },
         compression,
+        generate_stubs: false,
     };
 
-    let mut build_context = build_options
+    let build_context = build_options
         .into_build_context()
         .strip(strip)
         .editable(true)

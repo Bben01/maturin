@@ -147,8 +147,7 @@ fn compile_targets(
     let mut artifacts = Vec::with_capacity(targets.len());
     for target in targets {
         let build_command = cargo_build_command(context, python_interpreter, target)?;
-        let artifact = compile_target(context, build_command)?;
-        artifacts.push(artifact);
+        artifacts.push(compile_target(context, build_command)?);
     }
     Ok(artifacts)
 }
@@ -313,7 +312,7 @@ fn cargo_build_command(
                     cargo_xwin::XWinOptions::parse_from(Vec::<&str>::new())
                 };
 
-        let mut build = cargo_xwin::Rustc::from(cargo_rustc.clone());
+                let mut build = cargo_xwin::Rustc::from(cargo_rustc);
                 build.target = vec![target_triple.to_string()];
                 build.xwin = xwin_options;
                 build.build_command()?
@@ -334,7 +333,7 @@ fn cargo_build_command(
     } else {
         #[cfg(feature = "zig")]
         {
-        let mut build = cargo_zigbuild::Rustc::from(cargo_rustc.clone());
+            let mut build = cargo_zigbuild::Rustc::from(cargo_rustc);
             if !context.zig {
                 build.disable_zig_linker = true;
                 if target.user_specified {
@@ -410,11 +409,6 @@ fn cargo_build_command(
     // Set PYO3_BUILD_EXTENSION_MODULE when building pyo3 extension modules
     if bridge_model.is_pyo3() && !bridge_model.is_bin() {
         build_command.env("PYO3_BUILD_EXTENSION_MODULE", "1");
-        if context.generate_stubs {
-            cargo_rustc
-                .args
-                .extend(["--features=pyo3/experimental-inspect".to_string()]);
-        }
     }
 
     // Setup `PYO3_CONFIG_FILE` if we are cross compiling for pyo3 bindings
@@ -491,9 +485,7 @@ fn cargo_build_command(
 fn compile_target(
     context: &BuildContext,
     mut build_command: Command,
-) -> Result<
-    HashMap<CrateType, BuildArtifact>,
-> {
+) -> Result<HashMap<CrateType, BuildArtifact>> {
     debug!("Running {:?}", build_command);
 
     let using_cross = build_command

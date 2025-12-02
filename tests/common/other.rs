@@ -68,7 +68,7 @@ pub fn test_musl() -> Result<bool> {
         "test-crates/wheels/test_musl",
     ])?;
 
-    let mut build_context = options
+    let build_context = options
         .into_build_context()
         .strip(cfg!(feature = "faster-tests"))
         .editable(false)
@@ -238,23 +238,27 @@ pub fn check_sdist_mtimes(
     Ok(())
 }
 
-fn build_wheel_files(package: impl AsRef<Path>, unique_name: &str) -> Result<ZipArchive<File>> {
+fn build_wheel_files(
+    package: impl AsRef<Path>,
+    unique_name: &str,
+    extra_args: &[&str],
+) -> Result<ZipArchive<File>> {
     let manifest_path = package.as_ref().join("Cargo.toml");
     let wheel_directory = Path::new("test-crates").join("wheels").join(unique_name);
 
-    let build_options = BuildOptions {
-        out: Some(wheel_directory),
-        cargo: CargoOptions {
-            manifest_path: Some(manifest_path),
-            quiet: true,
-            target_dir: Some(PathBuf::from(format!("test-crates/targets/{unique_name}"))),
-            ..Default::default()
-        },
-        platform_tag: vec![PlatformTag::Linux],
-        ..Default::default()
-    };
+    let mut cli = vec!["build"];
+    cli.extend(extra_args);
+    let mut build_options = BuildOptions::try_parse_from(cli)?;
 
-    let mut build_context = build_options
+    build_options.out = Some(wheel_directory);
+    build_options.cargo.manifest_path = Some(manifest_path);
+    build_options.cargo.quiet = true;
+    build_options.cargo.target_dir = Some(PathBuf::from(format!(
+        "test-crates/targets/{unique_name}"
+    )));
+    build_options.platform_tag = vec![PlatformTag::Linux];
+
+    let build_context = build_options
         .into_build_context()
         .strip(false)
         .editable(false)
@@ -274,7 +278,7 @@ pub fn check_wheel_mtimes(
     expected_mtime: Vec<OffsetDateTime>,
     unique_name: &str,
 ) -> Result<()> {
-    let mut wheel = build_wheel_files(package, unique_name)?;
+    let mut wheel = build_wheel_files(package, unique_name, &[])?;
     let mut mtimes = BTreeSet::<OffsetDateTime>::new();
 
     for idx in 0..wheel.len() {
@@ -291,8 +295,9 @@ pub fn check_wheel_files(
     package: impl AsRef<Path>,
     expected_files: Vec<&str>,
     unique_name: &str,
+    extra_args: &[&str],
 ) -> Result<()> {
-    let wheel = build_wheel_files(package, unique_name)?;
+    let wheel = build_wheel_files(package, unique_name, extra_args)?;
     let drop_platform_specific_files = |file: &&str| -> bool {
         !matches!(Path::new(file).extension(), Some(ext) if ext == "pyc" || ext == "pyd" || ext == "so")
     };

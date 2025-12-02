@@ -188,7 +188,7 @@ pub struct ToolMaturin {
     /// Strip the final binary
     #[serde(default)]
     pub strip: bool,
-    /// Generate pyi stubs for pyo3 bindings
+    /// Generate pyi stub files for pyo3 bindings
     #[serde(default)]
     pub generate_stubs: bool,
     /// Source distribution generator
@@ -324,13 +324,6 @@ impl PyProjectToml {
     pub fn strip(&self) -> bool {
         self.maturin()
             .map(|maturin| maturin.strip)
-            .unwrap_or_default()
-    }
-
-    /// Returns the value of `[tool.maturin.generate-stubs]` in pyproject.toml
-    pub fn generate_stubs(&self) -> bool {
-        self.maturin()
-            .map(|maturin| maturin.generate_stubs)
             .unwrap_or_default()
     }
 

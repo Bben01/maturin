@@ -143,6 +143,9 @@ Options:
       --compression-level <COMPRESSION_LEVEL>
           Zip compression level. Defaults to method default
 
+      --generate-stubs
+          Generate pyi stub files for pyo3 bindings
+
   -h, --help
           Print help (see a summary with '-h')
 

@@ -69,6 +69,19 @@ pub trait ModuleWriterExt: ModuleWriter {
     fn add_empty_file(&mut self, target: impl AsRef<Path>) -> Result<()> {
         self.add_bytes(target, None, io::empty(), false)
     }
+
+    /// Adds a file with a byte slice as content
+    fn add_bytes_from_slice(
+        &mut self,
+        target: impl AsRef<Path>,
+        data: &[u8],
+        executable: bool,
+    ) -> Result<()> {
+        let target = target.as_ref();
+        debug!("Adding {} from byte slice", target.display());
+        self.add_bytes(target, None, std::io::Cursor::new(data), executable)
+            .with_context(|| format!("Failed to write to {}", target.display()))
+    }
 }
 
 /// This blanket impl makes it impossible to overwrite the methods in [ModuleWriterExt]

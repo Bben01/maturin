@@ -377,7 +377,7 @@ fn run() -> Result<()> {
             if release {
                 build.profile = Some("release".to_string());
             }
-            let mut build_context = build
+            let build_context = build
                 .into_build_context()
                 .strip(strip)
                 .editable(false)
